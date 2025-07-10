@@ -151,6 +151,10 @@ function isPointInsideTriangle(p, [a, b, c]) {
 function findValidPosition(vertices, edges, peripheryIndices, width, height) {
   if (peripheryIndices.length < 2) return null;
 
+  // Use larger canvas size for positioning
+  const canvasWidth = Math.max(width, 800);
+  const canvasHeight = Math.max(height, 600);
+
   // Calculate the centroid of the selected periphery segment
   const segmentVertices = peripheryIndices.map(idx => vertices[idx]);
   const centroid = segmentVertices.reduce(
@@ -544,6 +548,179 @@ function addVertexToSegment(prev, connectTo, pos) {
   return { newVertices, newEdges };
 }
 
+// Redraw function: reconstruct graph from scratch while preserving ALL original connections
+function redrawGraph(vertices, edges, canvasWidth, canvasHeight) {
+  if (vertices.length < 3) return { vertices, edges };
+
+  // Step 1: Start with triangle (first 3 vertices) - preserve original triangle edges
+  const w = canvasWidth, h = canvasHeight;
+  const R = Math.min(w, h) * 0.1;
+  const cx = w / 2, cy = h / 2;
+  
+  // Create new vertices array with repositioned coordinates
+  const newVertices = vertices.map((v, i) => ({
+    ...v,
+    pos: i < 3 ? {
+      x: i === 0 ? cx : i === 1 ? cx + R * Math.cos(Math.PI / 6) : cx - R * Math.cos(Math.PI / 6),
+      y: i === 0 ? cy - R : cy + R * Math.sin(Math.PI / 6)
+    } : { x: 0, y: 0 } // Temporary position for vertices > 3
+  }));
+
+  // Step 2: Start with original triangle edges (not assumed triangle)
+  let currentVertices = newVertices.slice(0, 3);
+  let currentEdges = edges.filter(([a, b]) => a < 3 && b < 3); // Only edges within first 3 vertices
+
+  // Process vertices in order (4th, 5th, 6th, etc.)
+  for (let i = 3; i < vertices.length; i++) {
+    // Find which vertices this vertex was originally connected to (only already placed vertices)
+    const originalConnections = edges
+      .filter(([a, b]) => a === i || b === i)
+      .map(([a, b]) => a === i ? b : a)
+      .filter(connIdx => connIdx < i); // Only consider already placed vertices
+
+    if (originalConnections.length >= 2) {
+      // Try to find a valid position based on original connections
+      const periphery = getPeriphery(currentVertices, currentEdges);
+      
+      // Find the best segment that includes as many original connections as possible
+      let bestSegment = null;
+      let bestPosition = null;
+      let maxOriginalMatches = 0;
+
+      // Try different segment lengths
+      for (let segLen = 2; segLen <= Math.min(periphery.length, originalConnections.length + 2); segLen++) {
+        for (let startIdx = 0; startIdx < periphery.length; startIdx++) {
+          const segment = [];
+          for (let j = 0; j < segLen; j++) {
+            segment.push(periphery[(startIdx + j) % periphery.length]);
+          }
+
+          // Check if this segment is fully connected
+          if (isFullyConnected(currentVertices, currentEdges, segment)) {
+            // Count how many original connections this segment would preserve
+            const matchCount = segment.filter(idx => originalConnections.includes(idx)).length;
+            
+            const pos = findValidPosition(currentVertices, currentEdges, segment, canvasWidth, canvasHeight);
+            if (pos && matchCount >= maxOriginalMatches) {
+              bestSegment = segment;
+              bestPosition = pos;
+              maxOriginalMatches = matchCount;
+            }
+          }
+        }
+      }
+
+      if (bestSegment && bestPosition) {
+        // Add the vertex with the found position
+        newVertices[i].pos = bestPosition;
+        currentVertices.push(newVertices[i]);
+
+        // Add ALL original edges for this vertex (not just to the segment)
+        originalConnections.forEach(idx => {
+          if (!currentEdges.some(([a, b]) => (a === i && b === idx) || (a === idx && b === i))) {
+            currentEdges.push([i, idx]);
+          }
+        });
+
+        // Also add edges to complete the natural construction (segment connectivity)
+        bestSegment.forEach(idx => {
+          if (!currentEdges.some(([a, b]) => (a === i && b === idx) || (a === idx && b === i))) {
+            currentEdges.push([i, idx]);
+          }
+        });
+
+        // Close cycles among segment vertices if needed for natural construction
+        for (let j = 0; j < bestSegment.length; j++) {
+          const a = bestSegment[j];
+          const b = bestSegment[(j + 1) % bestSegment.length];
+          if (!currentEdges.some(([x, y]) => (x === a && y === b) || (x === b && y === a))) {
+            // Only add if this edge existed in original graph
+            if (edges.some(([x, y]) => (x === a && y === b) || (x === b && y === a))) {
+              currentEdges.push([a, b]);
+            }
+          }
+        }
+
+        // Handle internal vertices - preserve original triangulation
+        const edgeSet = new Set(currentEdges.map(([a, b]) => a < b ? `${a}-${b}` : `${b}-${a}`));
+        
+        // Add any missing original edges that should exist at this step
+        edges.forEach(([a, b]) => {
+          if ((a === i || b === i) && Math.max(a, b) <= i) {
+            const key = a < b ? `${a}-${b}` : `${b}-${a}`;
+            if (!edgeSet.has(key)) {
+              currentEdges.push([a, b]);
+              edgeSet.add(key);
+            }
+          }
+        });
+      } else {
+        // Fallback: place vertex and preserve original connections
+        const maxAttempts = 50;
+        let placed = false;
+        
+        for (let attempt = 0; attempt < maxAttempts; attempt++) {
+          const pos = {
+            x: 50 + Math.random() * (canvasWidth - 100),
+            y: 50 + Math.random() * (canvasHeight - 100)
+          };
+
+          // Check minimum distance to existing vertices
+          let tooClose = false;
+          for (const v of currentVertices) {
+            if (Math.hypot(pos.x - v.pos.x, pos.y - v.pos.y) < 44) {
+              tooClose = true;
+              break;
+            }
+          }
+
+          if (!tooClose) {
+            newVertices[i].pos = pos;
+            currentVertices.push(newVertices[i]);
+            
+            // Add ALL original connections for this vertex
+            originalConnections.forEach(idx => {
+              if (!currentEdges.some(([a, b]) => (a === i && b === idx) || (a === idx && b === i))) {
+                currentEdges.push([i, idx]);
+              }
+            });
+            
+            placed = true;
+            break;
+          }
+        }
+
+        if (!placed) {
+          // Ultimate fallback: place at canvas center with small random offset
+          newVertices[i].pos = {
+            x: cx + (Math.random() - 0.5) * 100,
+            y: cy + (Math.random() - 0.5) * 100
+          };
+          currentVertices.push(newVertices[i]);
+          
+          // Still preserve original connections
+          originalConnections.forEach(idx => {
+            if (!currentEdges.some(([a, b]) => (a === i && b === idx) || (a === idx && b === i))) {
+              currentEdges.push([i, idx]);
+            }
+          });
+        }
+      }
+    }
+  }
+
+  // Final step: ensure ALL original edges are preserved
+  const finalEdgeSet = new Set(currentEdges.map(([a, b]) => a < b ? `${a}-${b}` : `${b}-${a}`));
+  edges.forEach(([a, b]) => {
+    const key = a < b ? `${a}-${b}` : `${b}-${a}`;
+    if (!finalEdgeSet.has(key)) {
+      currentEdges.push([a, b]);
+    }
+  });
+
+  return { vertices: newVertices, edges: currentEdges };
+}
+
 const GraphCanvas = () => {
   const [graph, setGraph] = useState({
     vertices: [],
@@ -557,6 +734,156 @@ const GraphCanvas = () => {
   const svgRef = useRef();
   const [warning, setWarning] = useState("");
   const [cmd, setCmd] = useState("");
+  const [showManualModal, setShowManualModal] = useState(false);
+  const [manualInput, setManualInput] = useState({ vertex1: "", vertex2: "" });
+  
+  // Zoom and pan state
+  const [viewBox, setViewBox] = useState({ x: 0, y: 0, width: 800, height: 600 });
+  const [zoom, setZoom] = useState(1);
+  const [isDragging, setIsDragging] = useState(false);
+  const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
+  const [dragStartViewBox, setDragStartViewBox] = useState({ x: 0, y: 0 });
+
+  // Initialize viewBox based on dimensions
+  useEffect(() => {
+    setViewBox(prev => ({
+      ...prev,
+      width: dimensions.width,
+      height: dimensions.height
+    }));
+  }, [dimensions]);
+
+  // Zoom functions
+  const zoomIn = () => {
+    setZoom(prev => {
+      const newZoom = Math.min(prev * 1.2, 10); // Max zoom 10x
+      const factor = prev / newZoom;
+      setViewBox(prevViewBox => ({
+        x: prevViewBox.x + (prevViewBox.width * (1 - factor)) / 2,
+        y: prevViewBox.y + (prevViewBox.height * (1 - factor)) / 2,
+        width: prevViewBox.width * factor,
+        height: prevViewBox.height * factor
+      }));
+      return newZoom;
+    });
+  };
+
+  const zoomOut = () => {
+    setZoom(prev => {
+      const newZoom = Math.max(prev / 1.2, 0.1); // Min zoom 0.1x
+      const factor = prev / newZoom;
+      setViewBox(prevViewBox => ({
+        x: prevViewBox.x + (prevViewBox.width * (1 - factor)) / 2,
+        y: prevViewBox.y + (prevViewBox.height * (1 - factor)) / 2,
+        width: prevViewBox.width * factor,
+        height: prevViewBox.height * factor
+      }));
+      return newZoom;
+    });
+  };
+
+  const resetZoom = () => {
+    setZoom(1);
+    setViewBox({ x: 0, y: 0, width: dimensions.width, height: dimensions.height });
+  };
+
+  const fitToContent = () => {
+    if (graph.vertices.length === 0) return;
+    
+    const padding = 50;
+    const positions = graph.vertices.map(v => v.pos).filter(p => p);
+    
+    if (positions.length === 0) return;
+    
+    const minX = Math.min(...positions.map(p => p.x)) - padding;
+    const maxX = Math.max(...positions.map(p => p.x)) + padding;
+    const minY = Math.min(...positions.map(p => p.y)) - padding;
+    const maxY = Math.max(...positions.map(p => p.y)) + padding;
+    
+    const contentWidth = maxX - minX;
+    const contentHeight = maxY - minY;
+    
+    setViewBox({
+      x: minX,
+      y: minY,
+      width: contentWidth,
+      height: contentHeight
+    });
+    
+    // Calculate zoom level based on content
+    const zoomX = dimensions.width / contentWidth;
+    const zoomY = dimensions.height / contentHeight;
+    setZoom(Math.min(zoomX, zoomY));
+  };
+
+  // Mouse event handlers for dragging
+  const handleMouseDown = (e) => {
+    if (e.button !== 0) return; // Only left mouse button
+    setIsDragging(true);
+    setDragStart({ x: e.clientX, y: e.clientY });
+    setDragStartViewBox({ x: viewBox.x, y: viewBox.y });
+    e.preventDefault();
+  };
+
+  const handleMouseMove = (e) => {
+    if (!isDragging) return;
+    
+    const deltaX = e.clientX - dragStart.x;
+    const deltaY = e.clientY - dragStart.y;
+    
+    // Convert screen coordinates to viewBox coordinates
+    const scale = viewBox.width / dimensions.width;
+    
+    setViewBox(prev => ({
+      ...prev,
+      x: dragStartViewBox.x - deltaX * scale,
+      y: dragStartViewBox.y - deltaY * scale
+    }));
+  };
+
+  const handleMouseUp = () => {
+    setIsDragging(false);
+  };
+
+  const handleWheel = (e) => {
+    e.preventDefault();
+    
+    const rect = svgRef.current.getBoundingClientRect();
+    const mouseX = e.clientX - rect.left;
+    const mouseY = e.clientY - rect.top;
+    
+    // Convert mouse position to viewBox coordinates
+    const viewBoxMouseX = viewBox.x + (mouseX / dimensions.width) * viewBox.width;
+    const viewBoxMouseY = viewBox.y + (mouseY / dimensions.height) * viewBox.height;
+    
+    const zoomFactor = e.deltaY > 0 ? 1.1 : 0.9;
+    const newZoom = Math.min(Math.max(zoom * zoomFactor, 0.1), 10);
+    const actualZoomFactor = zoom / newZoom;
+    
+    setZoom(newZoom);
+    setViewBox(prev => ({
+      x: viewBoxMouseX - (viewBoxMouseX - prev.x) * actualZoomFactor,
+      y: viewBoxMouseY - (viewBoxMouseY - prev.y) * actualZoomFactor,
+      width: prev.width * actualZoomFactor,
+      height: prev.height * actualZoomFactor
+    }));
+  };
+
+  // Add event listeners for mouse events
+  useEffect(() => {
+    const handleGlobalMouseMove = (e) => handleMouseMove(e);
+    const handleGlobalMouseUp = () => handleMouseUp();
+    
+    if (isDragging) {
+      document.addEventListener('mousemove', handleGlobalMouseMove);
+      document.addEventListener('mouseup', handleGlobalMouseUp);
+    }
+    
+    return () => {
+      document.removeEventListener('mousemove', handleGlobalMouseMove);
+      document.removeEventListener('mouseup', handleGlobalMouseUp);
+    };
+  }, [isDragging, dragStart, dragStartViewBox, viewBox.width, dimensions.width]);
 
   useEffect(() => {
     function updateSize() {
@@ -623,6 +950,147 @@ const GraphCanvas = () => {
     });
   }
 
+  // Redraw graph from scratch while maintaining structure
+  function handleRedraw() {
+    setGraph(prev => {
+      if (prev.vertices.length < 3) {
+        setWarning("Need at least 3 vertices to redraw. Press S to start.");
+        return prev;
+      }
+      
+      const result = redrawGraph(prev.vertices, prev.edges, dimensions.width, dimensions.height);
+      setWarning("");
+      return { ...prev, vertices: result.vertices, edges: result.edges };
+    });
+  }
+
+  // Handle manual drawing
+  function handleManualDraw() {
+    const id1 = parseInt(manualInput.vertex1);
+    const id2 = parseInt(manualInput.vertex2);
+
+    if (isNaN(id1) || isNaN(id2)) {
+      setWarning("Please enter valid vertex IDs.");
+      return;
+    }
+    if (id1 === id2) {
+      setWarning("Please select two different vertex IDs.");
+      return;
+    }
+
+    setGraph(prev => {
+      // Get periphery as vertex IDs
+      const periphIndices = getPeriphery(prev.vertices, prev.edges);
+      const periphIDs = periphIndices.map(idx => prev.vertices[idx].id);
+      
+      // Both IDs must be on the periphery
+      if (!periphIDs.includes(id1) || !periphIDs.includes(id2)) {
+        setWarning("Both vertices must be on the periphery (orange outline).\nPeriphery: " + periphIDs.join(", "));
+        return prev;
+      }
+      // Find indices in vertices array
+      const idx1 = prev.vertices.findIndex(v => v.id === id1);
+      const idx2 = prev.vertices.findIndex(v => v.id === id2);
+      if (idx1 === -1 || idx2 === -1) {
+        setWarning("Vertex not found.");
+        return prev;
+      }
+      // Find a valid position for the new vertex
+      const v1Pos = prev.vertices[idx1].pos;
+      const v2Pos = prev.vertices[idx2].pos;
+      // Perpendicular placement
+      const midX = (v1Pos.x + v2Pos.x) / 2;
+      const midY = (v1Pos.y + v2Pos.y) / 2;
+      const dx = v2Pos.x - v1Pos.x;
+      const dy = v2Pos.y - v1Pos.y;
+      const length = Math.sqrt(dx * dx + dy * dy);
+      let pos = null;
+      if (length > 0) {
+        const perpX = -dy / length;
+        const perpY = dx / length;
+        const distances = [80, 60, 100, 120, 140, 160];
+        for (const distance of distances) {
+          for (const direction of [1, -1]) {
+            const candidate = {
+              x: midX + perpX * distance * direction,
+              y: midY + perpY * distance * direction
+            };
+            // Bounds
+            if (candidate.x < 30 || candidate.x > dimensions.width - 30 ||
+                candidate.y < 30 || candidate.y > dimensions.height - 30) continue;
+            // Min distance
+            let tooClose = false;
+            for (const v of prev.vertices) {
+              if (Math.hypot(candidate.x - v.pos.x, candidate.y - v.pos.y) < 44) {
+                tooClose = true;
+                break;
+              }
+            }
+            if (tooClose) continue;
+            // Edge crossing check
+            let wouldCross = false;
+            for (const [a, b] of prev.edges) {
+              // Only skip edges involving the two selected vertices
+              if ([id1, id2].includes(prev.vertices[a].id) || [id1, id2].includes(prev.vertices[b].id)) continue;
+              const p1 = prev.vertices[a].pos;
+              const p2 = prev.vertices[b].pos;
+              if (doLinesIntersect(candidate, v1Pos, p1, p2) || doLinesIntersect(candidate, v2Pos, p1, p2)) {
+                wouldCross = true;
+                break;
+              }
+            }
+            if (!wouldCross) {
+              pos = candidate;
+              break;
+            }
+          }
+          if (pos) break;
+        }
+      }
+      // Fallback: random safe placement
+      if (!pos) {
+        const maxAttempts = 100;
+        for (let attempt = 0; attempt < maxAttempts; attempt++) {
+          const candidate = {
+            x: 60 + Math.random() * (dimensions.width - 120),
+            y: 60 + Math.random() * (dimensions.height - 120)
+          };
+          let tooClose = false;
+          for (const v of prev.vertices) {
+            if (Math.hypot(candidate.x - v.pos.x, candidate.y - v.pos.y) < 44) {
+              tooClose = true;
+              break;
+            }
+          }
+          if (!tooClose) {
+            pos = candidate;
+            break;
+          }
+        }
+      }
+      if (!pos) {
+        setWarning("Could not find a valid position for the new vertex without edge crossings. Try different vertices or use the redraw function.");
+        return prev;
+      }
+      // Create the new vertex
+      const newVertex = {
+        id: getNextVertexId(prev.vertices),
+        color: null,
+        pos
+      };
+      // Add edges ONLY to the two selected vertices (by ID)
+      const newEdges = [...prev.edges, [idx1, prev.vertices.length], [idx2, prev.vertices.length]];
+      setWarning("");
+      setShowManualModal(false);
+      setManualInput({ vertex1: "", vertex2: "" });
+      return {
+        vertices: [...prev.vertices, newVertex],
+        edges: newEdges,
+        colors: prev.colors
+      };
+    });
+  }
+
   useEffect(() => {
     function handleKey(e) {
       if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA")
@@ -630,7 +1098,7 @@ const GraphCanvas = () => {
       if (e.key.toUpperCase() === "S") {
         setGLimit(null);
         setWarning("");
-        const w = dimensions.width, h = dimensions.height;
+        const w = Math.max(dimensions.width, 800), h = Math.max(dimensions.height, 600);
         const R = Math.min(w, h) * 0.1;
         const cx = w / 2, cy = h / 2;
         const pos = [
@@ -653,12 +1121,52 @@ const GraphCanvas = () => {
         });
       } else if (e.key.toUpperCase() === "R") {
         tryAddRandomVertex();
+      } else if (e.key.toUpperCase() === "D") {
+        handleRedraw();
+      } else if (e.key.toUpperCase() === "M") {
+        if (graph.vertices.length >= 3) {
+          setShowManualModal(true);
+        } else {
+          setWarning("Need at least 3 vertices for manual drawing. Press S to start.");
+        }
+      } else if (e.key.toUpperCase() === "C") {
+        setGraph((prev) => {
+          if (prev.vertices.length === 0) return prev;
+          const idx = prev.vertices.length - 1;
+          if (prev.vertices[idx].color) return prev;
+          const color = colorVertex(prev.vertices, prev.edges, idx, prev.colors);
+          const newVertices = prev.vertices.map((v, i) =>
+            i === idx ? { ...v, color } : v
+          );
+          return { ...prev, vertices: newVertices };
+        });
+      } else if (e.key.toUpperCase() === "T") {
+        setDisplayMode((m) => (m === "order" ? "color" : "order"));
+      } else if (e.key.toUpperCase() === "V") {
+        saveGraph(graph.vertices, graph.edges, graph.colors);
+      } else if (e.key.toUpperCase() === "L") {
+        fileInputRef.current && fileInputRef.current.click();
+      } else if (e.key.toUpperCase() === "G") {
+        // For G command, we need to focus the input box so user can type G followed by number
+        const inputElement = document.querySelector('input[type="text"]');
+        if (inputElement) {
+          inputElement.focus();
+          setCmd("G");
+        }
+      } else if (e.key === "+" || e.key === "=") {
+        zoomIn();
+      } else if (e.key === "-") {
+        zoomOut();
+      } else if (e.key === "0") {
+        resetZoom();
+      } else if (e.key.toUpperCase() === "F") {
+        fitToContent();
       }
     }
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
     // eslint-disable-next-line
-  }, [graph, displayMode, dimensions]);
+  }, [graph, displayMode, dimensions, zoomIn, zoomOut, resetZoom, fitToContent]);
 
   function handleCmdInput(e) {
     setCmd(e.target.value);
@@ -708,6 +1216,14 @@ const GraphCanvas = () => {
       });
     } else if (val === "R") {
       tryAddRandomVertex();
+    } else if (val === "D") {
+      handleRedraw();
+    } else if (val === "M") {
+      if (graph.vertices.length >= 3) {
+        setShowManualModal(true);
+      } else {
+        setWarning("Need at least 3 vertices for manual drawing. Press S to start.");
+      }
     } else if (val === "C") {
       setGraph((prev) => {
         if (prev.vertices.length === 0) return prev;
@@ -744,10 +1260,22 @@ const GraphCanvas = () => {
   let edgesToDraw = graph.edges;
   if (gLimit !== null) {
     verticesToDraw = graph.vertices.filter((v) => v.id <= gLimit);
-    const idxSet = new Set(verticesToDraw.map((v, i) => i));
-    edgesToDraw = graph.edges.filter(
-      ([a, b]) => idxSet.has(a) && idxSet.has(b)
-    );
+    // Create mapping from original indices to filtered indices
+    const originalToFilteredIdx = new Map();
+    verticesToDraw.forEach((v, newIdx) => {
+      const originalIdx = graph.vertices.findIndex(vertex => vertex.id === v.id);
+      originalToFilteredIdx.set(originalIdx, newIdx);
+    });
+    
+    // Filter edges and remap indices
+    edgesToDraw = graph.edges
+      .filter(([a, b]) => {
+        const vertexA = graph.vertices[a];
+        const vertexB = graph.vertices[b];
+        return vertexA && vertexB && vertexA.id <= gLimit && vertexB.id <= gLimit;
+      })
+      .map(([a, b]) => [originalToFilteredIdx.get(a), originalToFilteredIdx.get(b)])
+      .filter(([a, b]) => a !== undefined && b !== undefined);
   }
 
   function getVertexLabel(v, i) {
@@ -796,6 +1324,115 @@ const GraphCanvas = () => {
   function getVertexFontSize(v) {
     return 16 + Math.max(0, getVertexLabel(v).toString().length - 1) * 2;
   }
+  function renderZoomControls() {
+    return (
+      <div
+        style={{
+          position: "absolute",
+          right: 12,
+          top: 12,
+          background: "rgba(255,255,255,0.92)",
+          borderRadius: 10,
+          padding: "8px",
+          fontSize: 14,
+          color: "#334155",
+          boxShadow: "0 2px 8px #0001",
+          zIndex: 10,
+          display: "flex",
+          flexDirection: "column",
+          gap: 6,
+          minWidth: 120,
+        }}
+      >
+        <div style={{ fontSize: 12, fontWeight: 600, color: "#64748b", textAlign: "center", marginBottom: 4 }}>
+          Zoom: {Math.round(zoom * 100)}%
+        </div>
+        
+        <button
+          onClick={zoomIn}
+          style={{
+            padding: "6px 12px",
+            borderRadius: 6,
+            border: "1px solid #cbd5e1",
+            background: "#f8fafc",
+            cursor: "pointer",
+            fontSize: 14,
+            fontWeight: 500,
+            transition: "all 0.2s",
+          }}
+          onMouseEnter={(e) => e.target.style.background = "#e2e8f0"}
+          onMouseLeave={(e) => e.target.style.background = "#f8fafc"}
+        >
+          🔍+ Zoom In
+        </button>
+        
+        <button
+          onClick={zoomOut}
+          style={{
+            padding: "6px 12px",
+            borderRadius: 6,
+            border: "1px solid #cbd5e1",
+            background: "#f8fafc",
+            cursor: "pointer",
+            fontSize: 14,
+            fontWeight: 500,
+            transition: "all 0.2s",
+          }}
+          onMouseEnter={(e) => e.target.style.background = "#e2e8f0"}
+          onMouseLeave={(e) => e.target.style.background = "#f8fafc"}
+        >
+          🔍- Zoom Out
+        </button>
+        
+        <button
+          onClick={resetZoom}
+          style={{
+            padding: "6px 12px",
+            borderRadius: 6,
+            border: "1px solid #cbd5e1",
+            background: "#f8fafc",
+            cursor: "pointer",
+            fontSize: 14,
+            fontWeight: 500,
+            transition: "all 0.2s",
+          }}
+          onMouseEnter={(e) => e.target.style.background = "#e2e8f0"}
+          onMouseLeave={(e) => e.target.style.background = "#f8fafc"}
+        >
+          🎯 Reset
+        </button>
+        
+        <button
+          onClick={fitToContent}
+          disabled={graph.vertices.length === 0}
+          style={{
+            padding: "6px 12px",
+            borderRadius: 6,
+            border: "1px solid #cbd5e1",
+            background: graph.vertices.length === 0 ? "#f1f5f9" : "#f8fafc",
+            cursor: graph.vertices.length === 0 ? "not-allowed" : "pointer",
+            fontSize: 14,
+            fontWeight: 500,
+            transition: "all 0.2s",
+            opacity: graph.vertices.length === 0 ? 0.5 : 1,
+          }}
+          onMouseEnter={(e) => {
+            if (graph.vertices.length > 0) e.target.style.background = "#e2e8f0";
+          }}
+          onMouseLeave={(e) => {
+            if (graph.vertices.length > 0) e.target.style.background = "#f8fafc";
+          }}
+        >
+          📐 Fit All
+        </button>
+        
+        <div style={{ fontSize: 11, color: "#94a3b8", textAlign: "center", marginTop: 4 }}>
+          Drag to pan<br />Scroll to zoom
+        </div>
+      </div>
+    );
+  }
+
   function renderHelp() {
     return (
       <div
@@ -812,7 +1449,7 @@ const GraphCanvas = () => {
           zIndex: 10,
         }}
       >
-        {/* <b>Natural Construction Controls:</b>
+        <b>Natural Construction Controls:</b>
         <ul style={{ margin: 0, paddingLeft: 18 }}>
           <li>
             <b>S</b>: Start with triangle (3 vertices)
@@ -825,6 +1462,12 @@ const GraphCanvas = () => {
           </li>
           <li>
             <b>R</b>: Add random vertex to periphery (follows natural construction)
+          </li>
+          <li>
+            <b>D</b>: Redraw graph from scratch (maintains structure)
+          </li>
+          <li>
+            <b>M</b>: Manual drawing - select 2 periphery vertices
           </li>
           <li>
             <b>C</b>: Color last added vertex
@@ -845,12 +1488,15 @@ const GraphCanvas = () => {
         <div style={{ marginTop: 8, fontSize: 13, color: "#64748b" }}>
           <b>Periphery:</b> Orange outlined vertices form the outer boundary
         </div>
+        <div style={{ marginTop: 8, fontSize: 13, color: "#64748b" }}>
+          <b>Zoom & Pan:</b> +/- keys, 0 to reset, F to fit, drag to pan, scroll to zoom
+        </div>
         <form onSubmit={handleCmdSubmit} style={{ marginTop: 8 }}>
           <input
             type="text"
             value={cmd}
             onChange={handleCmdInput}
-            placeholder='Type command (e.g. "A, 1-3", "R")'
+            placeholder='Type command (e.g. "A, 1-3", "R", "D", "M")'
             style={{
               fontSize: 15,
               padding: "3px 8px",
@@ -893,7 +1539,237 @@ const GraphCanvas = () => {
           >
             {warning}
           </div>
-        )} */}
+        )}
+      </div>
+    );
+  }
+
+  // Manual drawing modal component
+  function renderManualModal() {
+    if (!showManualModal) return null;
+    
+    const periph = getPeriphery(graph.vertices, graph.edges);
+    
+    return (
+      <div
+        style={{
+          position: "fixed",
+          top: 0,
+          left: 0,
+          width: "100%",
+          height: "100%",
+          background: "rgba(0,0,0,0.5)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          zIndex: 1000,
+        }}
+        onClick={(e) => {
+          if (e.target === e.currentTarget) {
+            setShowManualModal(false);
+            setManualInput({ vertex1: "", vertex2: "" });
+            setWarning("");
+          }
+        }}
+      >
+        <div
+          style={{
+            background: "white",
+            borderRadius: 12,
+            padding: "24px",
+            minWidth: "420px",
+            maxWidth: "500px",
+            boxShadow: "0 8px 32px rgba(22, 22, 22, 0.3)",
+          }}
+        >
+          <h3 style={{ margin: "0 0 16px 0", color: "#334155", fontSize: 20 }}>
+            Manual Drawing
+          </h3>
+          <p style={{ margin: "0 0 20px 0", color: "#64748b", fontSize: 14, lineHeight: 1.5 }}>
+            Select 2 periphery vertices to connect with a new vertex.
+            <br />
+            <strong>Current periphery:</strong> {periph.length} vertices (numbered 1-{periph.length})
+            <br />
+            <span style={{ color: "#f59e42", fontWeight: 500 }}>
+              Look for orange-outlined vertices in the graph
+            </span>
+          </p>
+          
+          <div style={{ display: "flex", gap: 16, marginBottom: 20 }}>
+            <div style={{ flex: 1 }}>
+              <label style={{ display: "block", marginBottom: 8, color: "#334155", fontWeight: 500 }}>
+                First Vertex:
+              </label>
+              <input
+                type="number"
+                min="1"
+                max={periph.length}
+                value={manualInput.vertex1}
+                onChange={(e) => setManualInput(prev => ({ ...prev, vertex1: e.target.value }))}
+                style={{
+                  width: "100%",
+                  padding: "10px 12px",
+                  borderRadius: 6,
+                  border: "1px solid #cbd5e1",
+                  fontSize: 16,
+                  outline: "none",
+                  transition: "border-color 0.2s",
+                }}
+                placeholder="1"
+                onFocus={(e) => e.target.style.borderColor = "#3b82f6"}
+                onBlur={(e) => e.target.style.borderColor = "#cbd5e1"}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && manualInput.vertex1 && manualInput.vertex2) {
+                    handleManualDraw();
+                  } else if (e.key === "Escape") {
+                    setShowManualModal(false);
+                    setManualInput({ vertex1: "", vertex2: "" });
+                    setWarning("");
+                  }
+                }}
+              />
+            </div>
+            
+            <div style={{ flex: 1 }}>
+              <label style={{ display: "block", marginBottom: 8, color: "#334155", fontWeight: 500 }}>
+                Second Vertex:
+              </label>
+              <input
+                type="number"
+                min="1"
+                max={periph.length}
+                value={manualInput.vertex2}
+                onChange={(e) => setManualInput(prev => ({ ...prev, vertex2: e.target.value }))}
+                style={{
+                  width: "100%",
+                  padding: "10px 12px",
+                  borderRadius: 6,
+                  border: "1px solid #cbd5e1",
+                  fontSize: 16,
+                  outline: "none",
+                  transition: "border-color 0.2s",
+                }}
+                placeholder="2"
+                                  onFocus={(e) => e.target.style.borderColor = "#3b82f6"}
+                  onBlur={(e) => e.target.style.borderColor = "#cbd5e1"}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && manualInput.vertex1 && manualInput.vertex2) {
+                      handleManualDraw();
+                    } else if (e.key === "Escape") {
+                      setShowManualModal(false);
+                      setManualInput({ vertex1: "", vertex2: "" });
+                      setWarning("");
+                    }
+                  }}
+                />
+            </div>
+          </div>
+          
+          {/* Quick selection buttons */}
+          <div style={{ marginBottom: 20 }}>
+            <p style={{ margin: "0 0 8px 0", color: "#64748b", fontSize: 13 }}>
+              Quick select adjacent periphery pairs (by vertex ID):
+            </p>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {(() => {
+                const periph = getPeriphery(graph.vertices, graph.edges);
+                const periphIDs = periph.map(idx => graph.vertices[idx]?.id);
+                return Array.from({ length: Math.min(periphIDs.length, 8) }, (_, i) => {
+                  const firstID = periphIDs[i];
+                  const secondID = periphIDs[(i + 1) % periphIDs.length];
+                  return (
+                    <button
+                      key={`${firstID}-${secondID}`}
+                      onClick={() => setManualInput({ vertex1: firstID?.toString() || "", vertex2: secondID?.toString() || "" })}
+                      style={{
+                        padding: "4px 8px",
+                        borderRadius: 4,
+                        border: "1px solid #e2e8f0",
+                        background: "#f8fafc",
+                        cursor: "pointer",
+                        fontSize: 12,
+                        color: "#475569",
+                        transition: "all 0.2s",
+                      }}
+                      onMouseEnter={e => {
+                        e.target.style.background = "#e2e8f0";
+                        e.target.style.borderColor = "#cbd5e1";
+                      }}
+                      onMouseLeave={e => {
+                        e.target.style.background = "#f8fafc";
+                        e.target.style.borderColor = "#e2e8f0";
+                      }}
+                    >
+                      {firstID},{secondID}
+                    </button>
+                  );
+                });
+              })()}
+            </div>
+            <div style={{ marginTop: 8, color: "#64748b", fontSize: 13 }}>
+              <b>Current periphery vertex IDs:</b> {(() => {
+                const periph = getPeriphery(graph.vertices, graph.edges);
+                const periphIDs = periph.map(idx => graph.vertices[idx]?.id);
+                return periphIDs.join(", ");
+              })()}
+            </div>
+          </div>
+          
+          <div style={{ display: "flex", gap: 12, justifyContent: "flex-end" }}>
+            <button
+              onClick={() => {
+                setShowManualModal(false);
+                setManualInput({ vertex1: "", vertex2: "" });
+                setWarning("");
+              }}
+              style={{
+                padding: "10px 20px",
+                borderRadius: 6,
+                border: "1px solid #cbd5e1",
+                background: "#f8fafc",
+                cursor: "pointer",
+                fontSize: 14,
+                color: "#475569",
+                transition: "all 0.2s",
+              }}
+              onMouseEnter={(e) => {
+                e.target.style.background = "#e2e8f0";
+              }}
+              onMouseLeave={(e) => {
+                e.target.style.background = "#f8fafc";
+              }}
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleManualDraw}
+              disabled={!manualInput.vertex1 || !manualInput.vertex2}
+              style={{
+                padding: "10px 20px",
+                borderRadius: 6,
+                border: "1px solid #3b82f6",
+                background: (!manualInput.vertex1 || !manualInput.vertex2) ? "#94a3b8" : "#3b82f6",
+                color: "white",
+                cursor: (!manualInput.vertex1 || !manualInput.vertex2) ? "not-allowed" : "pointer",
+                fontSize: 14,
+                fontWeight: 500,
+                transition: "all 0.2s",
+              }}
+              onMouseEnter={(e) => {
+                if (manualInput.vertex1 && manualInput.vertex2) {
+                  e.target.style.background = "#2563eb";
+                }
+              }}
+              onMouseLeave={(e) => {
+                if (manualInput.vertex1 && manualInput.vertex2) {
+                  e.target.style.background = "#3b82f6";
+                }
+              }}
+            >
+              Add Vertex
+            </button>
+          </div>
+        </div>
       </div>
     );
   }
@@ -913,31 +1789,34 @@ const GraphCanvas = () => {
       }}
     >
       {renderHelp()}
-      {/* Scrollable SVG container */}
+      {renderZoomControls()}
+      {renderManualModal()}
+      {/* SVG container with zoom and pan */}
       <div
         style={{
           width: "100%",
           height: "100%",
-          maxWidth: 1200,
-          maxHeight: 900,
           minWidth: 400,
           minHeight: 400,
-          overflow: "auto",
           borderRadius: 12,
           background: "none",
           boxShadow: "0 1px 4px #0001",
-          margin: "0 auto",
+          overflow: "hidden",
         }}
       >
         <svg
           ref={svgRef}
-          width={Math.max(dimensions.width, graph.vertices.length > 100 ? 2000 : 800)}
-          height={Math.max(dimensions.height, graph.vertices.length > 100 ? 1500 : 600)}
-          viewBox={`0 0 ${Math.max(dimensions.width, graph.vertices.length > 100 ? 2000 : 800)} ${Math.max(dimensions.height, graph.vertices.length > 100 ? 1500 : 600)}`}
+          width="100%"
+          height="100%"
+          viewBox={`${viewBox.x} ${viewBox.y} ${viewBox.width} ${viewBox.height}`}
           style={{
             display: "block",
             background: "none",
+            cursor: isDragging ? "grabbing" : "grab",
+            userSelect: "none",
           }}
+          onMouseDown={handleMouseDown}
+          onWheel={handleWheel}
         >
           {edgesToDraw.map(([a, b], i) => {
             if (!verticesToDraw[a] || !verticesToDraw[b]) return null;
@@ -1034,3 +1913,4 @@ const GraphCanvas = () => {
 };
 
 export default GraphCanvas;
+

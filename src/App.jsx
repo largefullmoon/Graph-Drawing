@@ -1,12 +1,22 @@
 import { useState, useEffect } from 'react'
-import MenuBar from './components/MenuBar'
-import ControlPanel from './components/ControlPanel'
+import { 
+  addVertexRandom, 
+  addVertexManual, 
+  colorLastVertex, 
+  jumpToVertex, 
+  exportGraph, 
+  importGraph, 
+  initializeGraph,
+  COLORS 
+} from './utils/graphUtils'
+// import MenuBar from './components/MenuBar'
+// import ControlPanel from './components/ControlPanel'
 import GraphCanvas from './components/GraphCanvas'
-import StatusBar from './components/StatusBar'
+// import StatusBar from './components/StatusBar'
 
 function App() {
   const [status, setStatus] = useState('Status: Ready.')
-  const [graph, setGraph] = useState(null)
+  const [graph, setGraph] = useState(initializeGraph())
   const [displayMode, setDisplayMode] = useState('order')
   const [isHelpVisible, setIsHelpVisible] = useState(false)
   const [dimensions, setDimensions] = useState({ width: 800, height: 600 });
@@ -35,6 +45,7 @@ function App() {
       if (key === 'r' && graph) handleAddVertexRandom(dimensions);
       if (key === 'c' && graph) handleColorLastVertex();
       if (key === 't' && graph) handleToggleDisplayMode();
+      if (key === 's') handleStartNewGraph();
 
       // Buffer-based commands
       if (key.match(/[a-z0-9,\-]/i)) {
@@ -170,27 +181,33 @@ function App() {
     input.click();
   };
 
+  // Start New Graph
+  const handleStartNewGraph = () => {
+    setGraph(initializeGraph());
+    setStatus('New graph started.');
+  };
+
   return (
     <div className="h-screen flex flex-col bg-gradient-to-br from-slate-50 via-blue-50/10 to-indigo-50/10">
-      <MenuBar
+      {/* <MenuBar
         onSave={handleSave}
         onLoad={handleLoad}
         onToggleDisplayMode={handleToggleDisplayMode}
-      />
+      /> */}
       <div className="flex-1 flex min-h-0">
-        <ControlPanel
+        {/* <ControlPanel
           onAddVertexManual={handleAddVertexManual}
           onAddVertexRandom={handleAddVertexRandom}
           onColorLastVertex={handleColorLastVertex}
           onToggleDisplayMode={handleToggleDisplayMode}
           onJumpToState={handleJumpToState}
           graph={graph}
-        />
+        /> */}
         <div className="flex-1 p-8">
           <GraphCanvas graph={graph} displayMode={displayMode} setDimensions={setDimensions} dimensions={dimensions} />
         </div>
       </div>
-      <StatusBar message={status} graph={graph} />
+      {/* <StatusBar message={status} graph={graph} /> */}
 
       {/* Help Overlay */}
       {isHelpVisible && (
